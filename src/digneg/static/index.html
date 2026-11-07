@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>digneg</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-title">
+      <h1>digneg</h1>
+      <span>16-Bit Digital Negative &amp; Step Wedge Profiler</span>
+    </div>
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="convert" type="button">Negative Converter</button>
+      <button class="nav-tab" data-tab="calibrate" type="button">Calibration Curves</button>
+      <button class="nav-tab" data-tab="wedge" type="button">Step Wedge</button>
+      <button class="nav-tab" data-tab="guide" type="button">Darkroom Procedure</button>
+    </nav>
+  </header>
+
+  <main class="workspace">
+    <!-- VIEW 1: CONVERT -->
+    <section id="view-convert" class="view active">
+      <div class="split-layout">
+        <div class="panel">
+          <div class="panel-header">
+            <span>Input &amp; Output Parameters</span>
+          </div>
+          <div class="panel-body">
+            <div class="control-group">
+              <label for="fileInput">Source Image (TIFF, PNG, JPEG)</label>
+              <div class="file-drop" id="dropzone">
+                <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.tif,.tiff" hidden />
+                <div id="dropzoneText">Select or drop positive image file</div>
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label for="convProfileSelect">Active Profile (Browser Storage)</label>
+              <select id="convProfileSelect"></select>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <label for="convInkMode">Ink Mode Override</label>
+                <select id="convInkMode">
+                  <option value="">Profile Default</option>
+                  <option value="pyro_amber">pyro_amber (R+Y+K UV Block)</option>
+                  <option value="ruby_red">ruby_red (Safelight Red+K)</option>
+                  <option value="grayscale">grayscale (Monochrome K)</option>
+                </select>
+              </div>
+              <div>
+                <label for="convDpi">Output DPI</label>
+                <input type="number" id="convDpi" placeholder="Source DPI" min="72" max="2880" />
+              </div>
+            </div>
+
+            <label class="checkbox-line">
+              <input type="checkbox" id="convFlip" checked />
+              <span>Mirror horizontally for emulsion-to-emulsion contact</span>
+            </label>
+
+            <div class="actions">
+              <button class="btn btn-primary" id="btnPreviewConv" type="button">Render Preview</button>
+              <button class="btn" id="btnDownloadConv" type="button">Export 16-Bit TIFF</button>
+            </div>
+            <div id="convStatus" class="status-line"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>Inspection Viewport</span>
+            <span id="convMetaReadout"></span>
+          </div>
+          <div class="panel-body">
+            <div class="viewport" id="convPreviewBox">
+              <div class="viewport-empty">No image loaded</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: CALIBRATE -->
+    <section id="view-calibrate" class="view">
+      <div class="split-layout">
+        <div class="panel">
+          <div class="panel-header">
+            <span>Profile Parameters</span>
+          </div>
+          <div class="panel-body">
+            <div class="control-group">
+              <label for="calLoadSelect">Saved Profiles (localStorage)</label>
+              <select id="calLoadSelect"></select>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <label for="calName">Profile Identifier</label>
+                <input type="text" id="calName" value="ilford_mg_rc_default" />
+              </div>
+              <div>
+                <label for="calSteps">Wedge Steps</label>
+                <input type="number" id="calSteps" value="21" min="2" max="101" />
+              </div>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <label for="calBlack">Black Point Step (Dmax)</label>
+                <input type="number" id="calBlack" value="2.0" step="0.5" min="0" />
+                <div class="help-text">Highest step at full paper black</div>
+              </div>
+              <div>
+                <label for="calWhite">White Point Step (Dmin)</label>
+                <input type="number" id="calWhite" value="17.0" step="0.5" min="1" />
+                <div class="help-text">Lowest step at base paper white</div>
+              </div>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <label for="calMid">Midtone Step (50% Gray)</label>
+                <input type="number" id="calMid" value="9.5" step="0.5" placeholder="Linear" />
+              </div>
+              <div>
+                <label for="calGamma">Gamma</label>
+                <input type="number" id="calGamma" value="1.0" step="0.05" min="0.1" max="4.0" />
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label for="calInkMode">Spectral Ink Mode</label>
+              <select id="calInkMode">
+                <option value="pyro_amber">pyro_amber — UV/Blue Blocker (R+Y+K)</option>
+                <option value="ruby_red">ruby_red — Safelight Ruby Density</option>
+                <option value="grayscale">grayscale — Monochrome K</option>
+              </select>
+            </div>
+
+            <label class="checkbox-line">
+              <input type="checkbox" id="calFlip" checked />
+              <span>Mirror horizontally by default</span>
+            </label>
+
+            <div class="control-group">
+              <label for="calNotes">Process Notes (Paper, Filter, Enlarger Height, Exposure)</label>
+              <textarea id="calNotes" rows="2" placeholder="Ilford MG RC Pearl, Filter #2, 12s @ f/8"></textarea>
+            </div>
+
+            <div class="actions">
+              <button class="btn btn-primary" id="btnSaveProfile" type="button">Save</button>
+              <button class="btn" id="btnExportProfile" type="button">Export JSON</button>
+              <button class="btn" id="btnImportProfile" type="button">Import JSON</button>
+              <button class="btn btn-danger" id="btnDeleteProfile" type="button">Delete</button>
+              <input type="file" id="importProfileInput" accept=".json" hidden />
+            </div>
+            <div id="calStatus" class="status-line"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>Transfer Function (PCHIP / Gamma LUT)</span>
+          </div>
+          <div class="panel-body">
+            <div class="viewport">
+              <canvas id="curveCanvas" width="560" height="400"></canvas>
+              <div id="curveSummary" class="readout-bar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: STEP WEDGE -->
+    <section id="view-wedge" class="view">
+      <div class="split-layout">
+        <div class="panel">
+          <div class="panel-header">
+            <span>Step Tablet Generator</span>
+          </div>
+          <div class="panel-body">
+            <div class="control-row">
+              <div>
+                <label for="wedgeSteps">Step Count</label>
+                <input type="number" id="wedgeSteps" value="21" min="2" max="101" />
+              </div>
+              <div>
+                <label for="wedgeDpi">Resolution (DPI)</label>
+                <input type="number" id="wedgeDpi" value="300" min="150" max="1440" />
+              </div>
+            </div>
+
+            <div class="control-row">
+              <div>
+                <label for="wedgeWidth">Width (in)</label>
+                <input type="number" id="wedgeWidth" value="8.0" step="0.5" min="2.0" max="24.0" />
+              </div>
+              <div>
+                <label for="wedgeHeight">Height (in)</label>
+                <input type="number" id="wedgeHeight" value="2.5" step="0.25" min="1.0" max="12.0" />
+              </div>
+            </div>
+
+            <div class="control-group">
+              <label for="wedgeInkMode">Spectral Ink Mode</label>
+              <select id="wedgeInkMode">
+                <option value="pyro_amber">pyro_amber — UV/Blue Blocker</option>
+                <option value="ruby_red">ruby_red — Safelight Ruby Density</option>
+                <option value="grayscale">grayscale — Monochrome K</option>
+              </select>
+            </div>
+
+            <div class="control-group">
+              <label for="wedgeProfile">Calibration Curve (Verification Pass)</label>
+              <select id="wedgeProfile">
+                <option value="">Uncalibrated Linear (0%–100%)</option>
+              </select>
+            </div>
+
+            <label class="checkbox-line">
+              <input type="checkbox" id="wedgeFlip" checked />
+              <span>Mirror horizontally for contact printing</span>
+            </label>
+
+            <label class="checkbox-line">
+              <input type="checkbox" id="wedgeCompareInks" />
+              <span>Append 3-mode ink opacity comparison strip</span>
+            </label>
+
+            <div class="actions">
+              <button class="btn btn-primary" id="btnPreviewWedge" type="button">Render Tablet</button>
+              <button class="btn" id="btnDownloadWedge" type="button">Export 16-Bit TIFF</button>
+            </div>
+            <div id="wedgeStatus" class="status-line"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>Step Tablet Preview</span>
+            <span id="wedgeMetaReadout"></span>
+          </div>
+          <div class="panel-body">
+            <div class="viewport" id="wedgePreviewBox">
+              <div class="viewport-empty">Click "Render Tablet" to generate preview</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 4: DARKROOM PROCEDURE -->
+    <section id="view-guide" class="view">
+      <div class="doc-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <span>1. Base Exposure Determination (Dmax)</span>
+          </div>
+          <div class="panel-body doc-section">
+            <p>
+              Step-wedge calibration requires locking in a single <b>Base Exposure Time</b> first—the shortest exposure at which clear OHP transparency film produces maximum paper black (<code>Dmax</code>).
+            </p>
+            <h3>Method A: Clear Film Test Strip (Recommended)</h3>
+            <ol>
+              <li>Place a strip of unprinted clear OHP film over photographic paper so half of the paper is bare and half is covered by clear film.</li>
+              <li>Expose in progressive intervals (e.g. <code>4s, 6s, 8s, 12s, 16s, 22s</code>) with a <b>Grade 2</b> filter in the enlarger.</li>
+              <li>After processing and drying, identify the shortest exposure time where the film-covered region merges indistinguishably into the bare-paper black. Lock this time, aperture, and enlarger height.</li>
+            </ol>
+
+            <h3>Method B: Multi-Exposure Test on the Step Wedge</h3>
+            <p>
+              Do <b>not</b> move your test-strip mask along the step columns (giving Step 0 and Step 20 different times). Always step the opaque card <b>perpendicular to the steps</b> so each horizontal time band crosses every step from <code>0</code> to <code>20</code>:
+            </p>
+            <svg class="svg-diagram" viewBox="0 0 460 150" xmlns="http://www.w3.org/2000/svg">
+              <rect width="460" height="150" fill="#0d0d0d" />
+              <!-- Vertical step columns -->
+              <g stroke="#2c2c2c" stroke-width="1">
+                <rect x="20" y="20" width="45" height="110" fill="#141414" />
+                <rect x="65" y="20" width="45" height="110" fill="#1f1f1f" />
+                <rect x="110" y="20" width="45" height="110" fill="#2c2c2c" />
+                <rect x="155" y="20" width="45" height="110" fill="#3d3d3d" />
+                <rect x="200" y="20" width="45" height="110" fill="#525252" />
+                <rect x="245" y="20" width="45" height="110" fill="#6b6b6b" />
+                <rect x="290" y="20" width="45" height="110" fill="#888888" />
+                <rect x="335" y="20" width="45" height="110" fill="#ababab" />
+              </g>
+              <!-- Horizontal time bands crossing all columns -->
+              <line x1="15" y1="56" x2="385" y2="56" stroke="#d4882a" stroke-width="1" stroke-dasharray="4,3" />
+              <line x1="15" y1="93" x2="385" y2="93" stroke="#d4882a" stroke-width="1" stroke-dasharray="4,3" />
+              <!-- Labels -->
+              <g font-family="monospace" font-size="10" fill="#8c8c8c">
+                <text x="27" y="15">S0</text>
+                <text x="72" y="15">S3</text>
+                <text x="117" y="15">S6</text>
+                <text x="162" y="15">S9</text>
+                <text x="205" y="15">S12</text>
+                <text x="250" y="15">S15</text>
+                <text x="295" y="15">S18</text>
+                <text x="340" y="15">S20</text>
+              </g>
+              <g font-family="monospace" font-size="10" fill="#d4882a">
+                <text x="392" y="42">t = 8s</text>
+                <text x="392" y="78">t = 12s</text>
+                <text x="392" y="115">t = 16s</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>2. Reading the Wedge &amp; Multigrade Filtration</span>
+          </div>
+          <div class="panel-body doc-section">
+            <h3>Single Flat Exposure &amp; Reading Reference Rails</h3>
+            <ol>
+              <li>Contact-print the uncalibrated 21-step wedge <b>ink-side down</b> against the paper emulsion for a single uniform exposure at your Base Exposure Time.</li>
+              <li><b>Black Point Step (Dmax):</b> Compare steps <code>0, 1, 2...</code> against the continuous <b>0% Ink Top Reference Rail</b>. Enter the highest step number that remains indistinguishable from pure black (e.g. <code>2.0</code>).</li>
+              <li><b>White Point Step (Dmin):</b> Compare the upper steps against the <b>100% Ink Bottom Reference Rail</b> or unexposed paper border. Enter the lowest step number that reaches pure paper base white (e.g. <code>17.0</code>).</li>
+              <li><b>Midtone Step:</b> Optionally enter the step number that visually represents 50% middle gray (e.g. <code>9.5</code>).</li>
+            </ol>
+
+            <h3>Multigrade Filter Selection</h3>
+            <ul>
+              <li><b>Standard Baseline (Grade 2):</b> Keep a <b>Grade 2</b> filter in the enlarger for both step-wedge calibration and final prints. Because the digital LUT linearizes paper contrast, you do not swap filters when printing calibrated negatives.</li>
+              <li><b>Avoid Unfiltered Bulb Light with Colorized Inks:</b> Variable-contrast emulsion combines blue-sensitive (high contrast) and green-sensitive (low contrast) halides. Under unfiltered white tungsten light, the yellow dye in <code>pyro_amber</code> acts like a low-contrast yellow filter in midtones. Using a <b>Grade 2</b> filter fixes the blue/green spectral ratio.</li>
+              <li><b>Insufficient Highlight Opacity (Step 20 Still Gray):</b> If Step 20 (100% ink) does not reach paper white at Grade 2, move up to a <b>Grade 3 or 3.5</b> filter and repeat the wedge test. Higher grades increase blue light, where <code>pyro_amber</code> has maximum UV/blue optical density.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
