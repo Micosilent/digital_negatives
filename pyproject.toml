@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=59.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digneg"
+version = "0.1.0"
+description = "Digital Negative & Step Wedge Profiler for Silver Gelatin and Alternative Contact Printing"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.8",
+    "Pillow>=9.0",
+    "click>=8.0",
+    "matplotlib>=3.5",
+]
+
+[project.scripts]
+digneg = "digneg.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+digneg = ["static/*"]
