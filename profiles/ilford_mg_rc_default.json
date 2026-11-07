@@ -1,0 +1,12 @@
+{
+  "name": "ilford_mg_rc_default",
+  "steps_total": 21,
+  "black_step": 2.0,
+  "white_step": 17.0,
+  "midtone_step": 9.5,
+  "gamma": 1.0,
+  "ink_mode": "pyro_amber",
+  "flip_horizontal": true,
+  "notes": "Default Silver Gelatin starter profile (21-step wedge: Dmax at step 2 / 10% ink, Dmin paper white at step 17 / 85% ink, Pyro-Amber UV/Blue blocking dye mode).",
+  "custom_points": []
+}
