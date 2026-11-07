@@ -53,8 +53,8 @@ class CalibrationProfile:
         self.validate()
 
     def validate(self) -> None:
-        if self.steps_total < 2:
-            raise ValueError("steps_total must be at least 2.")
+        if self.steps_total < 2 or self.steps_total > 101:
+            raise ValueError("steps_total must be between 2 and 101.")
         max_idx = float(self.steps_total - 1)
         if not (0.0 <= self.black_step < self.white_step <= max_idx):
             raise ValueError(
@@ -82,10 +82,10 @@ class CalibrationProfile:
         return float(self.white_step) / float(self.steps_total - 1)
 
     def evaluate_ink_density(self, neg_tone: np.ndarray) -> np.ndarray:
-        """Map inverted negative tone N in [0.0, 1.0] to calibrated ink density D_out in [0.0, 1.0].
+        """Map positive luminance / tone x in [0.0, 1.0] to calibrated ink density D_out in [0.0, 1.0].
 
-        - N = 0.0 (original shadow -> print black) maps to d_min_fraction (black_step)
-        - N = 1.0 (original highlight -> print white) maps to d_max_fraction (white_step)
+        - x = 0.0 (original shadow -> print black) maps to d_min_fraction (black_step)
+        - x = 1.0 (original highlight -> print white) maps to d_max_fraction (white_step)
         """
         x = np.clip(np.asarray(neg_tone, dtype=np.float64), 0.0, 1.0)
 
@@ -113,6 +113,15 @@ class CalibrationProfile:
 
         # Linear remap between calibrated black point and white point
         return np.clip(d_min + x * (d_max - d_min), 0.0, 1.0)
+
+    def build_16bit_lut(self) -> np.ndarray:
+        """Precompute a 65536-entry uint16 lookup table mapping quantized 16-bit luminance to output pixels.
+
+        Returns an array of shape (65536,) for grayscale or (65536, 3) for colorized spectral modes.
+        """
+        domain = np.linspace(0.0, 1.0, 65536, dtype=np.float64)
+        ink_density = self.evaluate_ink_density(domain)
+        return density_to_16bit_pixels(ink_density, ink_mode=self.ink_mode)
 
     def build_curve_preview_data(self, num_samples: int = 256) -> Dict[str, List[float]]:
         """Return x/y curve arrays for interactive UI plotting."""
@@ -178,13 +187,6 @@ def density_to_16bit_pixels(ink_density: np.ndarray, ink_mode: str = "grayscale"
         return val
 
     if ink_mode == "pyro_amber":
-        # Silver gelatin is sensitive to Blue (400-480nm) and UV (<400nm).
-        # In RGB inkjet drivers:
-        # - Dropping Blue channel to 0 forces maximum Yellow dye (strongest blue/UV absorber).
-        # - Dropping Green channel forces Magenta dye (absorbs green/blue-green).
-        # - Dropping Red channel forces Cyan + Black ink.
-        # By ramping Blue down fastest, Green medium-fast, and Red linearly, the printer lays
-        # down a dense Pyro-Amber + Black deposit that blocks 100% of blue/UV without puddling.
         r_trans = np.clip(1.0 - 0.92 * np.power(d, 1.05), 0.0, 1.0)
         g_trans = np.clip(1.0 - 0.98 * np.power(d, 0.85), 0.0, 1.0)
         b_trans = np.clip(1.0 - 1.00 * np.power(d, 0.60), 0.0, 1.0)
@@ -192,7 +194,6 @@ def density_to_16bit_pixels(ink_density: np.ndarray, ink_mode: str = "grayscale"
         return np.rint(rgb * 65535.0).astype(np.uint16)
 
     if ink_mode == "ruby_red":
-        # Safelight Ruby tint: keeps high Red transmission in midtones while cranking Yellow+Magenta+K
         r_trans = np.clip(1.0 - 0.85 * np.power(d, 1.25), 0.0, 1.0)
         g_trans = np.clip(1.0 - 1.00 * np.power(d, 0.75), 0.0, 1.0)
         b_trans = np.clip(1.0 - 1.00 * np.power(d, 0.50), 0.0, 1.0)
@@ -200,3 +201,16 @@ def density_to_16bit_pixels(ink_density: np.ndarray, ink_mode: str = "grayscale"
         return np.rint(rgb * 65535.0).astype(np.uint16)
 
     raise ValueError(f"Unknown ink_mode: {ink_mode}")
+
+
+DEFAULT_PROFILE = CalibrationProfile(
+    name="ilford_mg_rc_default",
+    steps_total=21,
+    black_step=2.0,
+    white_step=17.0,
+    midtone_step=9.5,
+    gamma=1.0,
+    ink_mode="pyro_amber",
+    flip_horizontal=True,
+    notes="Default Silver Gelatin starter profile (21-step wedge: Dmax at step 2 / 10% ink, Dmin paper white at step 17 / 85% ink, Pyro-Amber UV/Blue blocking dye mode).",
+)
