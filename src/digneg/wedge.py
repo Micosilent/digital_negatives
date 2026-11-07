@@ -51,6 +51,12 @@ def generate_step_wedge_array(
     """
     if steps < 2 or steps > 101:
         raise ValueError("steps must be between 2 and 101.")
+    if not (1.0 <= width_inches <= 24.0):
+        raise ValueError("width_inches must be between 1.0 and 24.0.")
+    if not (0.5 <= height_inches <= 12.0):
+        raise ValueError("height_inches must be between 0.5 and 12.0.")
+    if not (72 <= dpi <= 1440):
+        raise ValueError("dpi must be between 72 and 1440.")
     if ink_mode not in INK_MODES:
         raise ValueError(f"ink_mode must be one of {list(INK_MODES.keys())}")
 
