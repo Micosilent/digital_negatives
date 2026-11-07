@@ -2,32 +2,74 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 import struct
-from typing import Tuple
+from typing import BinaryIO, Tuple, Union
 
 import numpy as np
 from PIL import Image
 
+# Guard against decompression bombs when exposed as a web service (120 megapixels max)
+Image.MAX_IMAGE_PIXELS = 120_000_000
 
-def load_image_normalized(path: str | Path) -> Tuple[np.ndarray, Tuple[float, float]]:
-    """Load a PNG, JPEG, or TIFF image into a normalized float64 array in [0.0, 1.0].
+ImageSource = Union[str, Path, bytes, BinaryIO]
+
+
+def load_image_normalized(source: ImageSource) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """Load a PNG, JPEG, or TIFF image from path, bytes, or stream into a float64 array in [0.0, 1.0].
 
     Supports 8-bit and 16-bit grayscale, RGB, and RGBA images.
     Returns (luminance_or_rgb_array, (dpi_x, dpi_y)).
     """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Image not found: {path}")
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {path}")
+        stream_or_path: Union[Path, BinaryIO] = path
+    elif isinstance(source, bytes):
+        stream_or_path = io.BytesIO(source)
+    else:
+        stream_or_path = source
 
-    with Image.open(path) as img:
+    with Image.open(stream_or_path) as img:
         dpi = img.info.get("dpi", (300.0, 300.0))
         dpi = (float(dpi[0]), float(dpi[1]))
+
+        # Handle uncompressed 16-bit RGB/RGBA TIFFs directly (Pillow truncates 16-bit RGB to 8-bit)
+        if img.format == "TIFF" and hasattr(img, "tag_v2"):
+            bps = img.tag_v2.get(258)
+            comp = img.tag_v2.get(259, 1)
+            planar = img.tag_v2.get(284, 1)
+            offsets = img.tag_v2.get(273)
+            byte_counts = img.tag_v2.get(279)
+            if (
+                comp == 1
+                and planar == 1
+                and bps in ((16, 16, 16), (16, 16, 16, 16))
+                and offsets
+                and byte_counts
+            ):
+                w, h = img.size
+                ch = len(bps)
+                fp = img.fp
+                fp.seek(0)
+                magic = fp.read(2)
+                endian = ">u2" if magic == b"MM" else "<u2"
+                strips = []
+                for off, cnt in zip(offsets, byte_counts):
+                    fp.seek(off)
+                    strips.append(fp.read(cnt))
+                raw_pcm = b"".join(strips)
+                expected_bytes = w * h * ch * 2
+                if len(raw_pcm) >= expected_bytes:
+                    arr16 = np.frombuffer(raw_pcm[:expected_bytes], dtype=endian).reshape((h, w, ch))
+                    arr_f = arr16[:, :, :3].astype(np.float64) / 65535.0
+                    return np.clip(arr_f, 0.0, 1.0), dpi
 
         # Handle 16-bit grayscale modes directly before any conversion
         if img.mode in ("I;16", "I;16B", "I;16L", "I"):
             arr = np.array(img, dtype=np.float64)
-            # Determine bit depth scale
             if img.mode == "I" and arr.max() <= 255.0:
                 scale = 255.0
             else:
@@ -36,7 +78,6 @@ def load_image_normalized(path: str | Path) -> Tuple[np.ndarray, Tuple[float, fl
 
         # Standard RGB / RGBA / L / P modes
         if img.mode == "RGBA":
-            # Composite over white background if alpha channel exists
             bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
             img = Image.alpha_composite(bg, img).convert("RGB")
         elif img.mode not in ("L", "RGB"):
@@ -58,6 +99,26 @@ def to_luminance(arr: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image array shape: {arr.shape}")
 
 
+def encode_tiff_16bit_bytes(
+    arr_uint16: np.ndarray,
+    dpi: Tuple[float, float] = (300.0, 300.0),
+) -> bytes:
+    """Encode a 2D (grayscale) or 3D (RGB) uint16 array as an uncompressed 16-bit TIFF in memory."""
+    if arr_uint16.dtype != np.uint16:
+        raise ValueError(f"Expected uint16 array, got {arr_uint16.dtype}")
+
+    if arr_uint16.ndim == 2:
+        buf = io.BytesIO()
+        img = Image.fromarray(arr_uint16)
+        img.save(buf, format="TIFF", dpi=dpi)
+        return buf.getvalue()
+
+    if arr_uint16.ndim == 3 and arr_uint16.shape[2] == 3:
+        return _encode_rgb_16bit_tiff_bytes(arr_uint16, dpi=dpi)
+
+    raise ValueError(f"Unsupported array shape for 16-bit TIFF: {arr_uint16.shape}")
+
+
 def save_tiff_16bit(
     path: str | Path,
     arr_uint16: np.ndarray,
@@ -66,62 +127,39 @@ def save_tiff_16bit(
     """Save a 2D (grayscale) or 3D (RGB) uint16 array as an uncompressed 16-bit TIFF with DPI metadata."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    if arr_uint16.dtype != np.uint16:
-        raise ValueError(f"Expected uint16 array, got {arr_uint16.dtype}")
-
-    if arr_uint16.ndim == 2:
-        # Pillow natively writes 2D uint16 as 16-bit grayscale TIFF (mode I;16)
-        img = Image.fromarray(arr_uint16)
-        img.save(path, format="TIFF", dpi=dpi)
-        return path
-
-    if arr_uint16.ndim == 3 and arr_uint16.shape[2] == 3:
-        # Write baseline uncompressed 16-bit RGB TIFF (little-endian)
-        _write_rgb_16bit_tiff(path, arr_uint16, dpi=dpi)
-        return path
-
-    raise ValueError(f"Unsupported array shape for 16-bit TIFF: {arr_uint16.shape}")
+    raw_bytes = encode_tiff_16bit_bytes(arr_uint16, dpi=dpi)
+    path.write_bytes(raw_bytes)
+    return path
 
 
-def _write_rgb_16bit_tiff(
-    path: Path,
+def _encode_rgb_16bit_tiff_bytes(
     arr: np.ndarray,
     dpi: Tuple[float, float] = (300.0, 300.0),
-) -> None:
-    """Write a 3-channel uint16 numpy array (H, W, 3) to an uncompressed baseline 16-bit RGB TIFF."""
+) -> bytes:
+    """Encode a 3-channel uint16 numpy array (H, W, 3) to uncompressed baseline 16-bit RGB TIFF bytes."""
     height, width, channels = arr.shape
     assert channels == 3
 
-    # Ensure little-endian uint16 contiguous bytes
     pixel_bytes = np.ascontiguousarray(arr, dtype="<u2").tobytes()
     strip_byte_count = len(pixel_bytes)
 
-    # TIFF Header (8 bytes): 'II' (little-endian), magic 42, offset to IFD (8)
-    # Followed by IFD entries, extra values (BitsPerSample, XRes, YRes), and pixel data
     num_tags = 12
     ifd_offset = 8
     ifd_size = 2 + num_tags * 12 + 4
     extra_offset = ifd_offset + ifd_size
 
-    # Extra data layout:
-    # 1. BitsPerSample: 3 * uint16 (6 bytes) -> (16, 16, 16)
     bps_offset = extra_offset
     bps_bytes = struct.pack("<HHH", 16, 16, 16)
 
-    # 2. XResolution: RATIONAL (2 * uint32 = 8 bytes)
     xres_offset = bps_offset + len(bps_bytes)
     xres_bytes = struct.pack("<II", int(round(dpi[0] * 1000)), 1000)
 
-    # 3. YResolution: RATIONAL (2 * uint32 = 8 bytes)
     yres_offset = xres_offset + len(xres_bytes)
     yres_bytes = struct.pack("<II", int(round(dpi[1] * 1000)), 1000)
 
-    # Pixel data starts immediately after extra values
     strip_offset = yres_offset + len(yres_bytes)
 
     def tag_entry(tag: int, dtype: int, count: int, value_or_offset: int) -> bytes:
-        # dtype: 3 = SHORT (uint16), 4 = LONG (uint32), 5 = RATIONAL
         return struct.pack("<HHII", tag, dtype, count, value_or_offset)
 
     tags = [
@@ -142,10 +180,4 @@ def _write_rgb_16bit_tiff(
     header = struct.pack("<2sHI", b"II", 42, ifd_offset)
     ifd = struct.pack("<H", num_tags) + b"".join(tags) + struct.pack("<I", 0)
 
-    with open(path, "wb") as f:
-        f.write(header)
-        f.write(ifd)
-        f.write(bps_bytes)
-        f.write(xres_bytes)
-        f.write(yres_bytes)
-        f.write(pixel_bytes)
+    return b"".join([header, ifd, bps_bytes, xres_bytes, yres_bytes, pixel_bytes])
