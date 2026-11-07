@@ -2,23 +2,13 @@
   "use strict";
 
   const STORAGE_KEY = "digneg_profiles_v1";
-  const DEFAULT_PROFILES = [
-    {
-      name: "ilford_mg_rc_default",
-      steps_total: 21,
-      black_step: 2.0,
-      white_step: 17.0,
-      midtone_step: 9.5,
-      gamma: 1.0,
-      ink_mode: "pyro_amber",
-      flip_horizontal: true,
-      notes: "Ilford Multigrade RC, Filter #2, 21-step calibration baseline.",
-      custom_points: []
-    }
-  ];
+  const CANVAS_LOGICAL_W = 560;
+  const CANVAS_LOGICAL_H = 400;
 
   let profiles = [];
   let selectedFile = null;
+  let selectedFileBase64 = null;
+  let isCalDirty = false;
 
   function $(id) {
     return document.getElementById(id);
@@ -31,7 +21,14 @@
     el.className = "status-line" + (message ? (isError ? " err" : " ok") : "");
   }
 
-  function loadProfiles() {
+  function setButtonsDisabled(ids, disabled) {
+    ids.forEach((id) => {
+      const btn = $(id);
+      if (btn) btn.disabled = disabled;
+    });
+  }
+
+  async function initProfiles() {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -42,9 +39,37 @@
         }
       }
     } catch (_) {
-      // fallback to default
+      // Fall through to server defaults
     }
-    profiles = JSON.parse(JSON.stringify(DEFAULT_PROFILES));
+
+    try {
+      const res = await fetch("/api/defaults");
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.profiles) && data.profiles.length > 0) {
+          profiles = data.profiles;
+          saveProfiles();
+          return;
+        }
+      }
+    } catch (_) {
+      // Minimal fallback if offline
+    }
+
+    profiles = [
+      {
+        name: "ilford_mg_rc_default",
+        steps_total: 21,
+        black_step: 2.0,
+        white_step: 17.0,
+        midtone_step: 9.5,
+        gamma: 1.0,
+        ink_mode: "pyro_amber",
+        flip_horizontal: true,
+        notes: "",
+        custom_points: []
+      }
+    ];
     saveProfiles();
   }
 
@@ -52,12 +77,12 @@
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
     } catch (_) {
-      // ignore storage quota errors
+      // Ignore storage quota errors
     }
   }
 
   function getProfile(name) {
-    return profiles.find((p) => p.name === name) || profiles[0] || DEFAULT_PROFILES[0];
+    return profiles.find((p) => p.name === name) || profiles[0];
   }
 
   function syncProfileSelectors(preferredName) {
@@ -69,9 +94,14 @@
     const curCal = preferredName || calSel.value;
     const curWedge = wedgeSel.value;
 
-    convSel.innerHTML = "";
-    calSel.innerHTML = "";
-    wedgeSel.innerHTML = '<option value="">Uncalibrated Linear (0%–100%)</option>';
+    convSel.textContent = "";
+    calSel.textContent = "";
+    wedgeSel.textContent = "";
+
+    const defaultWedgeOpt = document.createElement("option");
+    defaultWedgeOpt.value = "";
+    defaultWedgeOpt.textContent = "Uncalibrated Linear (0%–100%)";
+    wedgeSel.appendChild(defaultWedgeOpt);
 
     profiles.forEach((p) => {
       const text = `${p.name} [${p.ink_mode}, ${p.black_step}–${p.white_step}/${p.steps_total - 1}]`;
@@ -100,6 +130,7 @@
     $("calInkMode").value = prof.ink_mode;
     $("calFlip").checked = Boolean(prof.flip_horizontal);
     $("calNotes").value = prof.notes || "";
+    isCalDirty = false;
     requestCurveUpdate();
   }
 
@@ -119,7 +150,47 @@
     };
   }
 
+  function checkDirtyState() {
+    const current = readCalibrationForm();
+    const saved = getProfile($("calLoadSelect").value);
+    if (!saved) {
+      isCalDirty = true;
+      return;
+    }
+    isCalDirty =
+      current.name !== saved.name ||
+      current.steps_total !== saved.steps_total ||
+      current.black_step !== saved.black_step ||
+      current.white_step !== saved.white_step ||
+      current.midtone_step !== (saved.midtone_step ?? null) ||
+      current.gamma !== saved.gamma ||
+      current.ink_mode !== saved.ink_mode ||
+      current.flip_horizontal !== Boolean(saved.flip_horizontal) ||
+      current.notes !== (saved.notes || "");
+  }
+
+  function renderReadoutSummary(curve) {
+    const container = $("curveSummary");
+    container.textContent = "";
+
+    const items = [
+      ["Dmax floor: ", `${curve.black_pct}%`],
+      ["Dmin ceiling: ", `${curve.white_pct}%`],
+      ["Active range: ", `${(curve.white_pct - curve.black_pct).toFixed(1)}%`]
+    ];
+
+    items.forEach(([label, val]) => {
+      const span = document.createElement("span");
+      span.appendChild(document.createTextNode(label));
+      const strong = document.createElement("strong");
+      strong.textContent = val;
+      span.appendChild(strong);
+      container.appendChild(span);
+    });
+  }
+
   async function requestCurveUpdate() {
+    checkDirtyState();
     const payload = readCalibrationForm();
     try {
       const res = await fetch("/api/curve-preview", {
@@ -132,12 +203,13 @@
         setStatus("calStatus", data.error || "Invalid parameters", true);
         return;
       }
-      setStatus("calStatus", "");
+      if (isCalDirty) {
+        setStatus("calStatus", "Unsaved edits — click Save to update stored profile");
+      } else {
+        setStatus("calStatus", "");
+      }
       renderCurvePlot(data.curve);
-      $("curveSummary").innerHTML =
-        `<span>Dmax floor: <strong>${data.curve.black_pct}%</strong></span>` +
-        `<span>Dmin ceiling: <strong>${data.curve.white_pct}%</strong></span>` +
-        `<span>Active range: <strong>${(data.curve.white_pct - data.curve.black_pct).toFixed(1)}%</strong></span>`;
+      renderReadoutSummary(data.curve);
     } catch (err) {
       setStatus("calStatus", String(err), true);
     }
@@ -145,9 +217,23 @@
 
   function renderCurvePlot(curve) {
     const canvas = $("curveCanvas");
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.round(CANVAS_LOGICAL_W * dpr);
+    const targetH = Math.round(CANVAS_LOGICAL_H * dpr);
+
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      canvas.style.width = `${CANVAS_LOGICAL_W}px`;
+      canvas.style.height = `${CANVAS_LOGICAL_H}px`;
+    }
+
     const ctx = canvas.getContext("2d");
-    const W = canvas.width;
-    const H = canvas.height;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    const W = CANVAS_LOGICAL_W;
+    const H = CANVAS_LOGICAL_H;
     ctx.clearRect(0, 0, W, H);
 
     const padL = 52;
@@ -157,7 +243,6 @@
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
-    // Grid
     ctx.strokeStyle = "#222222";
     ctx.lineWidth = 1;
     ctx.font = "10px monospace";
@@ -181,7 +266,6 @@
       ctx.fillText(`${100 - i * 25}%`, padL - 34, y + 3);
     }
 
-    // Uncalibrated diagonal
     ctx.strokeStyle = "#3a3a3a";
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -192,7 +276,6 @@
 
     const xs = curve.positive_input_pct;
 
-    // Calibrated Ink Density
     const inkYs = curve.calibrated_ink_pct;
     ctx.strokeStyle = "#d4882a";
     ctx.lineWidth = 2;
@@ -205,7 +288,6 @@
     }
     ctx.stroke();
 
-    // Negative Pixel Output
     const negYs = curve.negative_pixel_pct;
     ctx.strokeStyle = "#8c8c8c";
     ctx.lineWidth = 1.5;
@@ -218,13 +300,14 @@
     }
     ctx.stroke();
 
-    // Legend
     ctx.fillStyle = "#d4882a";
     ctx.fillText("— Ink Density (%)", padL + 10, padT + 14);
     ctx.fillStyle = "#8c8c8c";
     ctx.fillText("— Negative Output (%)", padL + 135, padT + 14);
     ctx.fillStyle = "#6e6e6e";
     ctx.fillText("Positive Input Luminance (0% Shadow → 100% Highlight)", padL + 85, H - 8);
+
+    ctx.restore();
   }
 
   async function handleSaveProfile() {
@@ -245,7 +328,9 @@
       else profiles.push(payload);
       saveProfiles();
       syncProfileSelectors(payload.name);
+      isCalDirty = false;
       setStatus("calStatus", `Saved "${payload.name}" to localStorage`);
+      if (selectedFileBase64) renderConversionPreview();
     } catch (err) {
       setStatus("calStatus", String(err), true);
     }
@@ -256,7 +341,11 @@
     if (!name) return;
     profiles = profiles.filter((p) => p.name !== name);
     if (profiles.length === 0) {
-      profiles = JSON.parse(JSON.stringify(DEFAULT_PROFILES));
+      initProfiles().then(() => {
+        syncProfileSelectors();
+        populateCalibrationForm();
+      });
+      return;
     }
     saveProfiles();
     syncProfileSelectors(profiles[0].name);
@@ -313,25 +402,76 @@
     });
   }
 
-  function selectImageFile(file) {
+  async function selectImageFile(file) {
     if (!file) return;
     selectedFile = file;
-    $("dropzoneText").innerHTML = `<span class="filename">${file.name}</span> (${(file.size / 1024).toFixed(1)} KB)`;
-    renderConversionPreview();
+
+    const dropText = $("dropzoneText");
+    dropText.textContent = "";
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "filename";
+    nameSpan.textContent = file.name;
+    dropText.appendChild(nameSpan);
+    dropText.appendChild(document.createTextNode(` (${(file.size / 1024).toFixed(1)} KB)`));
+
+    try {
+      selectedFileBase64 = await fileToBase64(file);
+      await renderConversionPreview();
+    } catch (err) {
+      setStatus("convStatus", String(err), true);
+    }
+  }
+
+  function buildComparisonDOM(data) {
+    const box = $("convPreviewBox");
+    box.textContent = "";
+
+    const grid = document.createElement("div");
+    grid.className = "comparison-grid";
+
+    const makePane = (titleText, metaText, imgSrc, altText) => {
+      const pane = document.createElement("div");
+      pane.className = "comparison-pane";
+
+      const hdr = document.createElement("div");
+      hdr.className = "comparison-pane-header";
+      const s1 = document.createElement("span");
+      s1.textContent = titleText;
+      const s2 = document.createElement("span");
+      s2.textContent = metaText;
+      hdr.appendChild(s1);
+      hdr.appendChild(s2);
+
+      const img = document.createElement("img");
+      img.src = imgSrc;
+      img.alt = altText;
+
+      pane.appendChild(hdr);
+      pane.appendChild(img);
+      return pane;
+    };
+
+    grid.appendChild(
+      makePane("POSITIVE LUMINANCE", `${data.width}×${data.height}`, data.positive_preview, "Positive")
+    );
+    grid.appendChild(
+      makePane("CALIBRATED NEGATIVE", data.ink_mode, data.negative_preview, "Negative")
+    );
+    box.appendChild(grid);
   }
 
   async function renderConversionPreview() {
-    if (!selectedFile) {
+    if (!selectedFile || !selectedFileBase64) {
       setStatus("convStatus", "No source image selected", true);
       return;
     }
     setStatus("convStatus", "Processing preview...");
+    setButtonsDisabled(["btnPreviewConv", "btnDownloadConv"], true);
     try {
-      const b64 = await fileToBase64(selectedFile);
       const prof = getProfile($("convProfileSelect").value);
       const payload = {
         filename: selectedFile.name,
-        image_base64: b64,
+        image_base64: selectedFileBase64,
         profile: prof,
         override_ink_mode: $("convInkMode").value || null,
         override_flip: $("convFlip").checked,
@@ -349,41 +489,26 @@
       }
       $("convMetaReadout").textContent = `${data.width}×${data.height}px | ${data.dpi} DPI | ${data.ink_mode}`;
       setStatus("convStatus", "Preview updated");
-      $("convPreviewBox").innerHTML = `
-        <div class="comparison-grid">
-          <div class="comparison-pane">
-            <div class="comparison-pane-header">
-              <span>POSITIVE LUMINANCE</span>
-              <span>${data.width}×${data.height}</span>
-            </div>
-            <img src="${data.positive_preview}" alt="Positive" />
-          </div>
-          <div class="comparison-pane">
-            <div class="comparison-pane-header">
-              <span>CALIBRATED NEGATIVE</span>
-              <span>${data.ink_mode}</span>
-            </div>
-            <img src="${data.negative_preview}" alt="Negative" />
-          </div>
-        </div>
-      `;
+      buildComparisonDOM(data);
     } catch (err) {
       setStatus("convStatus", String(err), true);
+    } finally {
+      setButtonsDisabled(["btnPreviewConv", "btnDownloadConv"], false);
     }
   }
 
   async function exportConvertedTiff() {
-    if (!selectedFile) {
+    if (!selectedFile || !selectedFileBase64) {
       setStatus("convStatus", "No source image selected", true);
       return;
     }
     setStatus("convStatus", "Encoding 16-bit TIFF...");
+    setButtonsDisabled(["btnPreviewConv", "btnDownloadConv"], true);
     try {
-      const b64 = await fileToBase64(selectedFile);
       const prof = getProfile($("convProfileSelect").value);
       const payload = {
         filename: selectedFile.name,
-        image_base64: b64,
+        image_base64: selectedFileBase64,
         profile: prof,
         override_ink_mode: $("convInkMode").value || null,
         override_flip: $("convFlip").checked,
@@ -410,6 +535,8 @@
       setStatus("convStatus", `Exported ${stem}_neg16.tiff`);
     } catch (err) {
       setStatus("convStatus", String(err), true);
+    } finally {
+      setButtonsDisabled(["btnPreviewConv", "btnDownloadConv"], false);
     }
   }
 
@@ -429,6 +556,7 @@
 
   async function renderWedgePreview() {
     setStatus("wedgeStatus", "Rendering step tablet...");
+    setButtonsDisabled(["btnPreviewWedge", "btnDownloadWedge"], true);
     try {
       const payload = readWedgeParams();
       const res = await fetch("/api/wedge/preview", {
@@ -443,14 +571,23 @@
       }
       $("wedgeMetaReadout").textContent = `${data.width}×${data.height}px | ${payload.dpi} DPI | ${payload.steps} steps`;
       setStatus("wedgeStatus", "Step tablet ready");
-      $("wedgePreviewBox").innerHTML = `<img src="${data.preview}" alt="Step Wedge" />`;
+
+      const box = $("wedgePreviewBox");
+      box.textContent = "";
+      const img = document.createElement("img");
+      img.src = data.preview;
+      img.alt = "Step Wedge";
+      box.appendChild(img);
     } catch (err) {
       setStatus("wedgeStatus", String(err), true);
+    } finally {
+      setButtonsDisabled(["btnPreviewWedge", "btnDownloadWedge"], false);
     }
   }
 
   async function exportWedgeTiff() {
     setStatus("wedgeStatus", "Encoding 16-bit TIFF...");
+    setButtonsDisabled(["btnPreviewWedge", "btnDownloadWedge"], true);
     try {
       const payload = readWedgeParams();
       const res = await fetch("/api/wedge/tiff", {
@@ -473,6 +610,8 @@
       setStatus("wedgeStatus", "Exported 16-bit step tablet TIFF");
     } catch (err) {
       setStatus("wedgeStatus", String(err), true);
+    } finally {
+      setButtonsDisabled(["btnPreviewWedge", "btnDownloadWedge"], false);
     }
   }
 
@@ -515,13 +654,20 @@
     $("convProfileSelect").addEventListener("change", () => {
       const prof = getProfile($("convProfileSelect").value);
       if (prof) $("convFlip").checked = Boolean(prof.flip_horizontal);
+      if (selectedFileBase64) renderConversionPreview();
+    });
+
+    ["convInkMode", "convFlip"].forEach((id) => {
+      $(id).addEventListener("change", () => {
+        if (selectedFileBase64) renderConversionPreview();
+      });
     });
 
     $("btnPreviewConv").addEventListener("click", renderConversionPreview);
     $("btnDownloadConv").addEventListener("click", exportConvertedTiff);
 
     $("calLoadSelect").addEventListener("change", populateCalibrationForm);
-    ["calSteps", "calBlack", "calWhite", "calMid", "calGamma", "calInkMode"].forEach((id) => {
+    ["calName", "calSteps", "calBlack", "calWhite", "calMid", "calGamma", "calInkMode", "calFlip", "calNotes"].forEach((id) => {
       $(id).addEventListener("input", requestCurveUpdate);
       $(id).addEventListener("change", requestCurveUpdate);
     });
@@ -538,8 +684,8 @@
     $("btnDownloadWedge").addEventListener("click", exportWedgeTiff);
   }
 
-  window.addEventListener("DOMContentLoaded", () => {
-    loadProfiles();
+  window.addEventListener("DOMContentLoaded", async () => {
+    await initProfiles();
     syncProfileSelectors();
     populateCalibrationForm();
     const prof = getProfile($("convProfileSelect").value);
